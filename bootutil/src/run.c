@@ -21,11 +21,6 @@ extern int sim_flash_write(void *flash, uint32_t offset, const uint8_t *src, uin
  */
 static struct flash_area flash_areas[] = {
 	{
-		.fa_flash_id = FLASH_AREA_BOOTLOADER,
-		.fa_off = 0,
-		.fa_size = 128*1024,
-	},
-	{
 		.fa_flash_id = FLASH_AREA_IMAGE_0,
 		.fa_off = 128*1024,
 		.fa_size = 128*1024,
@@ -45,10 +40,11 @@ static struct flash_area flash_areas[] = {
 	},
 };
 
-static uint8_t slot_areas[] = { 1, 2, 3 };
+static uint8_t slot_areas[] = { 0, 1 };
 static const struct boot_req carbon_req = {
 	.br_area_descs = flash_areas,
 	.br_slot_areas = slot_areas,
+	.br_num_image_areas = 3,
 	.br_scratch_area_idx = 2,
 	.br_img_sz = 128*1024,
 };
@@ -74,6 +70,7 @@ int invoke_boot_go(void *flash)
 	return res;
 }
 
+#if 0
 int boot_read_image_header(struct boot_image_location *loc,
 			   struct image_header *out_hdr)
 {
@@ -90,6 +87,7 @@ int boot_read_image_header(struct boot_image_location *loc,
 	}
 	abort();
 }
+#endif
 
 int hal_flash_read(uint8_t flash_id, uint32_t address, void *dst,
 		   uint32_t num_bytes)
@@ -102,15 +100,15 @@ int hal_flash_read(uint8_t flash_id, uint32_t address, void *dst,
 int hal_flash_write(uint8_t flash_id, uint32_t address,
 		    const void *src, int32_t num_bytes)
 {
-	printf("hal_flash_write\n");
-	abort();
+	printf("hal_flash_write: 0x%08x (0x%x)\n", address, num_bytes);
+	return sim_flash_write(flash_device, address, src, num_bytes);
 }
 
 int hal_flash_erase(uint8_t flash_id, uint32_t address,
 		    uint32_t num_bytes)
 {
-	printf("hal_flash_erase\n");
-	abort();
+	printf("hal_flash_erase: 0x%08x, (0x%x)\n", address, num_bytes);
+	return sim_flash_erase(flash_device, address, num_bytes);
 }
 
 uint8_t hal_flash_align(uint8_t flash_id)
@@ -138,6 +136,7 @@ int boot_vect_write_test(int slot)
 	abort();
 }
 
+#if 0
 int boot_write_status(struct boot_status *bs)
 {
 	printf("boot_write_status\n");
@@ -156,3 +155,4 @@ void boot_clear_status(void)
 	printf("boot_write_status\n");
 	abort();
 }
+#endif

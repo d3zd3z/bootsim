@@ -122,11 +122,11 @@ impl Flash {
 #[derive(Debug)]
 pub struct Sector {
     /// Which sector is this, starting from 0.
-    num: usize,
+    pub num: usize,
     /// The offset, in bytes, of the start of this sector.
-    base: usize,
+    pub base: usize,
     /// The length, in bytes, of this sector.
-    size: usize,
+    pub size: usize,
 }
 
 pub struct SectorIter<'a> {
