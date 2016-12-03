@@ -8,17 +8,34 @@ use rand::{Rng, SeedableRng, XorShiftRng};
 use std::mem;
 use std::slice;
 
+mod area;
 mod flash;
 pub mod api;
 
 use flash::Flash;
+use area::{BootReq, CBootReq, FlashId};
 
 fn main() {
-    let mut flash = Flash::new(vec![16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024,
+    let (mut flash, bootreq) = if false {
+        // STM style flash.  Large sectors, with a large scratch area.
+        let flash = Flash::new(vec![16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024,
                                64 * 1024,
                                128 * 1024, 128 * 1024, 128 * 1024]);
-    // let mut flash = gen_image();
-    println!("boot go:");
+        let mut bootreq = BootReq::new(&flash);
+        bootreq.add_image(0x020000, 0x020000, FlashId::Image0);
+        bootreq.add_image(0x040000, 0x020000, FlashId::Image1);
+        bootreq.add_image(0x060000, 0x020000, FlashId::ImageScratch);
+        (flash, bootreq)
+    } else {
+        // NXP style flash.  Small sectors, one small sector for scratch.
+        let flash = Flash::new(vec![4096; 128]);
+
+        let mut bootreq = BootReq::new(&flash);
+        bootreq.add_image(0x020000, 0x020000, FlashId::Image0);
+        bootreq.add_image(0x040000, 0x020000, FlashId::Image1);
+        bootreq.add_image(0x060000, 0x001000, FlashId::ImageScratch);
+        (flash, bootreq)
+    };
 
     // Install the boot trailer signature, so that the code will start an upgrade.
     install_image(&mut flash, 0x020000, 32779);
@@ -30,16 +47,17 @@ fn main() {
     // however.)
     mark_upgrade(&mut flash, 0x03fff8);
 
-    show_flash(&flash);
+    // show_flash(&flash);
 
     println!("First boot for upgrade");
-    boot_go(&mut flash);
+    boot_go(&mut flash, &bootreq);
 
     println!("\n------------------\nSecond boot");
-    boot_go(&mut flash);
+    boot_go(&mut flash, &bootreq);
 }
 
 /// Show the flash layout.
+#[allow(dead_code)]
 fn show_flash(flash: &Flash) {
     println!("---- Flash configuration ----");
     for sector in flash.sector_iter() {
@@ -50,8 +68,9 @@ fn show_flash(flash: &Flash) {
 }
 
 /// Invoke the bootloader on this flash device.
-fn boot_go(flash: &mut Flash) {
-    unsafe { invoke_boot_go(flash as *mut _ as *mut libc::c_void) };
+fn boot_go(flash: &mut Flash, bootreq: &BootReq) {
+    unsafe { invoke_boot_go(flash as *mut _ as *mut libc::c_void,
+                            &bootreq.get_c() as *const _) };
 }
 
 /// Install a "program" into the given image.  This fakes the image header, or at least all of the
@@ -138,5 +157,6 @@ trait AsRaw : Sized {
 }
 
 extern "C" {
-    fn invoke_boot_go(flash: *mut libc::c_void) -> libc::c_int;
+    // Unsure how to get rid of this warning.
+    fn invoke_boot_go(flash: *mut libc::c_void, bootreq: *const CBootReq) -> libc::c_int;
 }
