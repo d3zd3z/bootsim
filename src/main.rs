@@ -1,12 +1,12 @@
-extern crate byteorder;
 extern crate libc;
 extern crate rand;
 
 #[macro_use]
 extern crate error_chain;
 
-use byteorder::{NativeEndian, WriteBytesExt};
 use rand::{Rng, SeedableRng, XorShiftRng};
+use std::mem;
+use std::slice;
 
 mod flash;
 pub mod api;
@@ -58,41 +58,62 @@ fn boot_go(flash: &mut Flash) {
 /// fields used by the given code.
 fn install_image(flash: &mut Flash, offset: usize, len: usize) {
     // Generate a boot header.  Note that the size doesn't include the header.
-    let mut header = vec![];
+    let header = ImageHeader {
+        magic: 0x96f3b83c,
+        tlv_size: 0,
+        _pad1: 0,
+        hdr_size: 32,
+        key_id: 0,
+        _pad2: 0,
+        img_size: len as u32,
+        flags: 0,
+        ver: ImageVersion {
+            major: 1,
+            minor: 0,
+            revision: 1,
+            build_num: 1,
+        },
+        _pad3: 0,
+    };
 
-    // ih_magic
-    header.write_u32::<NativeEndian>(0x96f3b83c).unwrap();
-    // ih_tlv_size
-    header.write_u16::<NativeEndian>(0).unwrap();
-    // ih_key_id
-    header.write_u8(0).unwrap();
-    // pad1
-    header.write_u8(0).unwrap();
-    // ih_hdr_size
-    header.write_u16::<NativeEndian>(32).unwrap();
-    // pad2
-    header.write_u16::<NativeEndian>(0).unwrap();
-    // Image size.
-    header.write_u32::<NativeEndian>(len as u32).unwrap();
-    // Flags
-    header.write_u32::<NativeEndian>(0).unwrap();
-    // Version: major, minor, rev, build.
-    header.write_u8(0).unwrap();
-    header.write_u8(0).unwrap();
-    header.write_u16::<NativeEndian>(0).unwrap();
-    header.write_u32::<NativeEndian>(0).unwrap();
-    // Pad
-    header.write_u32::<NativeEndian>(0).unwrap();
-
-    assert_eq!(header.len(), 32);
-
-    flash.write(offset, &header).unwrap();
-    let offset = offset + header.len();
+    let b_header = header.as_raw();
+    /*
+    let b_header = unsafe { slice::from_raw_parts(&header as *const _ as *const u8,
+                                                  mem::size_of::<ImageHeader>()) };
+                                                  */
+    assert_eq!(b_header.len(), 32);
+    flash.write(offset, &b_header).unwrap();
+    let offset = offset + b_header.len();
 
     // The core of the image itself is just pseudorandom data.
     let mut buf = vec![0; len];
     splat(&mut buf, offset);
     flash.write(offset, &buf).unwrap();
+}
+
+/// The image header
+#[repr(C)]
+pub struct ImageHeader {
+    magic: u32,
+    tlv_size: u16,
+    key_id: u8,
+    _pad1: u8,
+    hdr_size: u16,
+    _pad2: u16,
+    img_size: u32,
+    flags: u32,
+    ver: ImageVersion,
+    _pad3: u32,
+}
+
+impl AsRaw for ImageHeader {}
+
+#[repr(C)]
+pub struct ImageVersion {
+    major: u8,
+    minor: u8,
+    revision: u16,
+    build_num: u32,
 }
 
 /// Write out the magic so that the loader tries doing an upgrade.
@@ -106,6 +127,14 @@ fn splat(data: &mut [u8], seed: usize) {
     let seed_block = [0x135782ea, 0x92184728, data.len() as u32, seed as u32];
     let mut rng: XorShiftRng = SeedableRng::from_seed(seed_block);
     rng.fill_bytes(data);
+}
+
+/// Return a read-only view into the raw bytes of this object
+trait AsRaw : Sized {
+    fn as_raw<'a>(&'a self) -> &'a [u8] {
+        unsafe { slice::from_raw_parts(self as *const _ as *const u8,
+                                       mem::size_of::<Self>()) }
+    }
 }
 
 extern "C" {
