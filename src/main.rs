@@ -41,7 +41,7 @@ fn main() {
     install_image(&mut flash, 0x020000, 32779);
 
     // Install an upgrade image.
-    install_image(&mut flash, 0x040000, 41922);
+    let upgrade = install_image(&mut flash, 0x040000, 41922);
 
     // Mark the upgrade as ready to install.  (This looks like it might be a bug in the code,
     // however.)
@@ -51,6 +51,8 @@ fn main() {
 
     println!("First boot for upgrade");
     boot_go(&mut flash, &bootreq);
+
+    verify_image(&flash, 0x020000, &upgrade);
 
     println!("\n------------------\nSecond boot");
     boot_go(&mut flash, &bootreq);
@@ -74,8 +76,10 @@ fn boot_go(flash: &mut Flash, bootreq: &BootReq) {
 }
 
 /// Install a "program" into the given image.  This fakes the image header, or at least all of the
-/// fields used by the given code.
-fn install_image(flash: &mut Flash, offset: usize, len: usize) {
+/// fields used by the given code.  Returns a copy of the image that was written.
+fn install_image(flash: &mut Flash, offset: usize, len: usize) -> Vec<u8> {
+    let offset0 = offset;
+
     // Generate a boot header.  Note that the size doesn't include the header.
     let header = ImageHeader {
         magic: 0x96f3b83c,
@@ -108,6 +112,21 @@ fn install_image(flash: &mut Flash, offset: usize, len: usize) {
     let mut buf = vec![0; len];
     splat(&mut buf, offset);
     flash.write(offset, &buf).unwrap();
+    let offset = offset + buf.len();
+
+    // Copy out the image so that we can verify that the image was installed correctly later.
+    let mut copy = vec![0u8; offset - offset0];
+    flash.read(offset0, &mut copy).unwrap();
+
+    copy
+}
+
+/// Verify that given image is present in the flash at the given offset.
+fn verify_image(flash: &Flash, offset: usize, buf: &[u8]) {
+    let mut copy = vec![0u8; buf.len()];
+    flash.read(offset, &mut copy).unwrap();
+
+    assert_eq!(buf, &copy[..]);
 }
 
 /// The image header
