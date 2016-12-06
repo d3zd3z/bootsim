@@ -176,6 +176,8 @@ trait AsRaw : Sized {
 }
 
 extern "C" {
-    // Unsure how to get rid of this warning.
+    // This generates a warning about `CBootReq` not being foreign safe.  There doesn't appear to
+    // be any way to get rid of this warning.  See https://github.com/rust-lang/rust/issues/34798
+    // for information and tracking.
     fn invoke_boot_go(flash: *mut libc::c_void, bootreq: *const CBootReq) -> libc::c_int;
 }
