@@ -47,15 +47,65 @@ fn main() {
     // however.)
     mark_upgrade(&mut flash, 0x03fff8);
 
+    let (fl2, total_count) = try_upgrade(&flash, &bootreq, None);
+    println!("First boot, count={}", total_count);
+    assert!(verify_image(&fl2, 0x020000, &upgrade));
+
+    let mut bad = 0;
+    // Let's try an image halfway through.
+    for i in 1 .. total_count {
+        println!("Try interruption at {}", i);
+        let (fl3, total_count) = try_upgrade(&flash, &bootreq, Some(i));
+        println!("Second boot, count={}", total_count);
+        if !verify_image(&fl3, 0x020000, &upgrade) {
+            println!("FAIL");
+            bad += 1;
+        }
+    }
+    println!("{} out of {} failed {:.2}%",
+             bad, total_count,
+             bad as f32 * 100.0 / total_count as f32);
+
+    /*
     // show_flash(&flash);
 
     println!("First boot for upgrade");
+    // unsafe { flash_counter = 570 };
     boot_go(&mut flash, &bootreq);
+    // println!("{} flash ops", unsafe { flash_counter });
 
     verify_image(&flash, 0x020000, &upgrade);
 
     println!("\n------------------\nSecond boot");
     boot_go(&mut flash, &bootreq);
+    */
+}
+
+/// Test a boot, optionally stopping after 'n' flash options.  Returns a count of the number of
+/// flash operations done total.
+fn try_upgrade(flash: &Flash, bootreq: &BootReq, stop: Option<i32>) -> (Flash, i32) {
+    // Clone the flash to have a new copy.
+    let mut fl = flash.clone();
+
+    unsafe { flash_counter = stop.unwrap_or(0) };
+    let (first_interrupted, cnt1) = match boot_go(&mut fl, &bootreq) {
+        -0x13579 => (true, stop.unwrap()),
+        0 => (false, unsafe { -flash_counter }),
+        x => panic!("Unknown return: {}", x),
+    };
+    unsafe { flash_counter = 0 };
+
+    if first_interrupted {
+        match boot_go(&mut fl, &bootreq) {
+            -0x13579 => panic!("Shouldn't stop again"),
+            0 => (),
+            x => panic!("Unknown return: {}", x),
+        }
+    }
+
+    let cnt2 = cnt1 - unsafe { flash_counter };
+
+    (fl, cnt2)
 }
 
 /// Show the flash layout.
@@ -70,9 +120,9 @@ fn show_flash(flash: &Flash) {
 }
 
 /// Invoke the bootloader on this flash device.
-fn boot_go(flash: &mut Flash, bootreq: &BootReq) {
+fn boot_go(flash: &mut Flash, bootreq: &BootReq) -> i32 {
     unsafe { invoke_boot_go(flash as *mut _ as *mut libc::c_void,
-                            &bootreq.get_c() as *const _) };
+                            &bootreq.get_c() as *const _) as i32 }
 }
 
 /// Install a "program" into the given image.  This fakes the image header, or at least all of the
@@ -122,11 +172,11 @@ fn install_image(flash: &mut Flash, offset: usize, len: usize) -> Vec<u8> {
 }
 
 /// Verify that given image is present in the flash at the given offset.
-fn verify_image(flash: &Flash, offset: usize, buf: &[u8]) {
+fn verify_image(flash: &Flash, offset: usize, buf: &[u8]) -> bool {
     let mut copy = vec![0u8; buf.len()];
     flash.read(offset, &mut copy).unwrap();
 
-    assert_eq!(buf, &copy[..]);
+    buf == &copy[..]
 }
 
 /// The image header
@@ -180,4 +230,5 @@ extern "C" {
     // be any way to get rid of this warning.  See https://github.com/rust-lang/rust/issues/34798
     // for information and tracking.
     fn invoke_boot_go(flash: *mut libc::c_void, bootreq: *const CBootReq) -> libc::c_int;
+    static mut flash_counter: libc::c_int;
 }

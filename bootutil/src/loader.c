@@ -464,6 +464,12 @@ boot_go(const struct boot_req *req, struct boot_rsp *rsp)
     int slot;
     int rc;
 
+    /*
+     * Clear the boot state (needed for restart).
+     */
+    memset(&boot_state, 0, sizeof(boot_state));
+    memset(boot_img, 0, sizeof(boot_img));
+
     /* Set the global boot request object.  The remainder of the boot process
      * will reference the global.
      */

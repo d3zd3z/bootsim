@@ -1,5 +1,6 @@
 /* Run the boot image. */
 
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,8 @@ extern int sim_flash_read(void *flash, uint32_t offset, uint8_t *dest, uint32_t 
 extern int sim_flash_write(void *flash, uint32_t offset, const uint8_t *src, uint32_t size);
 
 static void *flash_device;
+static jmp_buf boot_jmpbuf;
+int flash_counter;
 
 int invoke_boot_go(void *flash, struct boot_req *req)
 {
@@ -20,9 +23,13 @@ int invoke_boot_go(void *flash, struct boot_req *req)
 	struct boot_rsp rsp;
 
 	flash_device = flash;
-	res = boot_go(req, &rsp);
-	printf("boot_go result: %d (0x%08x)\n", res, rsp.br_image_addr);
-	return res;
+	if (setjmp(boot_jmpbuf) == 0) {
+		res = boot_go(req, &rsp);
+		printf("boot_go result: %d (0x%08x)\n", res, rsp.br_image_addr);
+		return res;
+	} else {
+		return -0x13579;
+	}
 }
 
 int hal_flash_read(uint8_t flash_id, uint32_t address, void *dst,
@@ -36,6 +43,9 @@ int hal_flash_read(uint8_t flash_id, uint32_t address, void *dst,
 int hal_flash_write(uint8_t flash_id, uint32_t address,
 		    const void *src, int32_t num_bytes)
 {
+	if (--flash_counter == 0) {
+		longjmp(boot_jmpbuf, 1);
+	}
 	// printf("hal_flash_write: 0x%08x (0x%x)\n", address, num_bytes);
 	return sim_flash_write(flash_device, address, src, num_bytes);
 }
@@ -43,6 +53,9 @@ int hal_flash_write(uint8_t flash_id, uint32_t address,
 int hal_flash_erase(uint8_t flash_id, uint32_t address,
 		    uint32_t num_bytes)
 {
+	if (--flash_counter == 0) {
+		longjmp(boot_jmpbuf, 1);
+	}
 	// printf("hal_flash_erase: 0x%08x, (0x%x)\n", address, num_bytes);
 	return sim_flash_erase(flash_device, address, num_bytes);
 }

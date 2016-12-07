@@ -29,6 +29,7 @@ fn ewrite<T: AsRef<str>>(message: T) -> ErrorKind {
 
 /// An emulated flash device.  It is represented as a block of bytes, and a list of the sector
 /// mapings.
+#[derive(Clone)]
 pub struct Flash {
     data: Vec<u8>,
     sectors: Vec<usize>,
