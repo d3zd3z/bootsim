@@ -18,12 +18,27 @@ static void *flash_device;
 static jmp_buf boot_jmpbuf;
 int flash_counter;
 
-int invoke_boot_go(void *flash)
+struct area {
+	struct flash_area whole;
+	struct flash_area *areas;
+	uint32_t num_areas;
+	uint8_t id;
+};
+
+struct area_desc {
+	struct area slots[16];
+	uint32_t num_slots;
+};
+
+static struct area_desc *flash_areas;
+
+int invoke_boot_go(void *flash, struct area_desc *adesc)
 {
 	int res;
 	struct boot_rsp rsp;
 
 	flash_device = flash;
+	flash_areas = adesc;
 	if (setjmp(boot_jmpbuf) == 0) {
 		res = boot_go(&rsp);
 		printf("boot_go result: %d (0x%08x)\n", res, rsp.br_image_addr);
@@ -74,20 +89,30 @@ void *os_malloc(size_t size)
 
 int flash_area_id_from_image_slot(int slot)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	return slot + 1;
 }
 
 int flash_area_open(uint8_t id, const struct flash_area **area)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	int i;
+	struct area *slot;
+
+	for (i = 0; i < flash_areas->num_slots; i++) {
+		if (flash_areas->slots[i].id == id)
+			break;
+	}
+	if (i == flash_areas->num_slots) {
+		printf("Unsupported area\n");
+		abort();
+	}
+
+	/* Unsure if this is right, just returning the first area. */
+	*area = &flash_areas->slots[i].whole;
+	return 0;
 }
 
 void flash_area_close(const struct flash_area *area)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
 }
 
 /*
@@ -96,33 +121,56 @@ void flash_area_close(const struct flash_area *area)
 int flash_area_read(const struct flash_area *area, uint32_t off, void *dst,
 		    uint32_t len)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	return hal_flash_read(area->fa_id,
+			      area->fa_off + off,
+			      dst, len);
 }
 
 int flash_area_write(const struct flash_area *area, uint32_t off, const void *src,
 		     uint32_t len)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	return hal_flash_write(area->fa_id,
+			       area->fa_off + off,
+			       src, len);
 }
 
 int flash_area_erase(const struct flash_area *area, uint32_t off, uint32_t len)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	return hal_flash_erase(area->fa_id,
+			       area->fa_off + off,
+			       len);
 }
 
 int flash_area_to_sectors(int idx, int *cnt, struct flash_area *ret)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	int i;
+	struct area *slot;
+
+	for (i = 0; i < flash_areas->num_slots; i++) {
+		if (flash_areas->slots[i].id == idx)
+			break;
+	}
+	if (i == flash_areas->num_slots) {
+		printf("Unsupported area\n");
+		abort();
+	}
+
+	slot = &flash_areas->slots[i];
+
+	if (slot->num_areas > *cnt) {
+		printf("Too many areas in slot\n");
+		abort();
+	}
+
+	*cnt = slot->num_areas;
+	memcpy(ret, slot->areas, slot->num_areas * sizeof(struct flash_area));
+
+	return 0;
 }
 
 uint8_t flash_area_align(const struct flash_area *area)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	return 1;
 }
 
 
@@ -131,6 +179,10 @@ int bootutil_img_validate(struct image_header *hdr,
                           uint8_t *tmp_buf, uint32_t tmp_buf_sz,
                           uint8_t *seed, int seed_len, uint8_t *out_hash)
 {
-	printf("%s\n", __FUNCTION__);
-	abort();
+	if (hal_flash_read(fap->fa_id, fap->fa_off, tmp_buf, 4)) {
+		printf("Flash read error\n");
+		abort();
+	}
+
+	return (*((uint32_t *) tmp_buf) != 0x96f3b83c);
 }

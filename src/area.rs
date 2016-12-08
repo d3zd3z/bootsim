@@ -2,26 +2,22 @@
 
 use flash::{Flash, Sector};
 use std::marker::PhantomData;
+use std::ptr;
 
-/// Build a boot request.  This is used to build up the area descriptors.
+/// Structure to build up the boot area table.
 #[derive(Debug)]
-pub struct BootReq {
+pub struct AreaDesc {
+    areas: Vec<Vec<FlashArea>>,
+    whole: Vec<FlashArea>,
     sectors: Vec<Sector>,
-    areas: Vec<FlashArea>,
-    slots: Vec<u8>,
-    scratch: u8,
-    size: u32,
 }
 
-impl BootReq {
-    /// Construct an empty boot request.
-    pub fn new(flash: &Flash) -> BootReq {
-        BootReq {
-            sectors: flash.sector_iter().collect(),
+impl AreaDesc {
+    pub fn new(flash: &Flash) -> AreaDesc {
+        AreaDesc {
             areas: vec![],
-            slots: vec![],
-            scratch: 0,
-            size: 0,
+            whole: vec![],
+            sectors: flash.sector_iter().collect(),
         }
     }
 
@@ -29,25 +25,27 @@ impl BootReq {
     /// Panics if the description is not valid.  There are also bootloader assumptions that the
     /// slots are SLOT0, SLOT1, and SCRATCH in that order.
     pub fn add_image(&mut self, base: usize, len: usize, id: FlashId) {
+        let nid = id as usize;
+        let orig_base = base;
+        let orig_len = len;
         let mut base = base;
         let mut len = len;
-        let mut first = true;
 
-        if id != FlashId::ImageScratch {
-            if self.size == 0 {
-                self.size = len as u32;
-            } else {
-                if self.size != len as u32 {
-                    panic!("Multiple images of different sizes");
-                }
-            }
+        while nid > self.areas.len() {
+            self.areas.push(vec![]);
+            self.whole.push(Default::default());
         }
+
+        if nid != self.areas.len() {
+            panic!("Flash areas not added in order");
+        }
+
+        let mut area = vec![];
 
         for sector in &self.sectors {
             if len == 0 {
                 break;
-            }
-            // println!("Add: base={:x}, len={:x}, sector={:?}", base, len, sector);
+            };
             if base > sector.base + sector.size - 1 {
                 continue;
             }
@@ -55,18 +53,10 @@ impl BootReq {
                 panic!("Image does not start on a sector boundary");
             }
 
-            if first {
-                if id == FlashId::ImageScratch {
-                    self.scratch = self.areas.len() as u8;
-                } else {
-                    self.slots.push(self.areas.len() as u8);
-                }
-                first = false;
-            }
-
-            self.areas.push(FlashArea {
+            area.push(FlashArea {
                 flash_id: id,
-                pad: [0; 3],
+                device_id: 42,
+                pad16: 0,
                 off: sector.base as u32,
                 size: sector.size as u32,
             });
@@ -78,45 +68,65 @@ impl BootReq {
         if len != 0 {
             panic!("Image goes past end of device");
         }
+
+        self.areas.push(area);
+        self.whole.push(FlashArea {
+            flash_id: id,
+            device_id: 42,
+            pad16: 0,
+            off: orig_base as u32,
+            size: orig_len as u32,
+        });
     }
 
-    pub fn get_c(&self) -> CBootReq {
-        CBootReq {
-            area_descs: &self.areas[0],
-            slot_areas: &self.slots[0],
-            num_image_areas: self.areas.len() as u8,
-            scratch_area_idx: self.scratch,
-            img_sz: self.size,
-            phantom: PhantomData,
+    pub fn get_c(&self) -> CAreaDesc {
+        let mut areas: CAreaDesc = Default::default();
+
+        assert_eq!(self.areas.len(), self.whole.len());
+
+        for (i, area) in self.areas.iter().enumerate() {
+            if area.len() > 0 {
+                areas.slots[i].areas = &area[0];
+                areas.slots[i].whole = self.whole[i].clone();
+                areas.slots[i].num_areas = area.len() as u32;
+                areas.slots[i].id = area[0].flash_id;
+            }
         }
+
+        areas.num_slots = self.areas.len() as u32;
+
+        areas
     }
 }
 
-/// Boot request
+/// The area descriptor, C format.
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct CAreaDesc<'a> {
+    slots: [CArea<'a>; 16],
+    num_slots: u32,
+}
+
 #[repr(C)]
 #[derive(Debug)]
-pub struct CBootReq<'a> {
-    /// Array of area descriptors indicating the layout of flash(es); must be terminated with a
-    /// 0-length element.
-    area_descs: *const FlashArea,
+pub struct CArea<'a> {
+    whole: FlashArea,
+    areas: *const FlashArea,
+    num_areas: u32,
+    id: FlashId,
+    phantom: PhantomData<&'a AreaDesc>,
+}
 
-    /// Array of indices of elements in the array_descs array; indicates which areas represent the
-    /// beginning of an image slot.  These are indices into area_descs.
-    slot_areas: *const u8,
-
-    /// The number of image areas (size of image_areas array (comment is wrong))
-    num_image_areas: u8,
-
-    /// The area to use as the image scratch area, index is index to br_area_descs array of the
-    scratch_area_idx: u8,
-
-    // (16 bits of padding here)
-
-    /// Size of the image slot
-    img_sz: u32,
-
-    /// Holder of Phantom data for raw pointers.
-    phantom: PhantomData<&'a BootReq>,
+impl<'a> Default for CArea<'a> {
+    fn default() -> CArea<'a> {
+        CArea {
+            areas: ptr::null(),
+            whole: Default::default(),
+            id: FlashId::BootLoader,
+            num_areas: 0,
+            phantom: PhantomData,
+        }
+    }
 }
 
 /// Flash area map.
@@ -133,11 +143,18 @@ pub enum FlashId {
     RebootLog = 6
 }
 
+impl Default for FlashId {
+    fn default() -> FlashId {
+        FlashId::BootLoader
+    }
+}
+
 #[repr(C)]
-#[derive(Debug)]
+#[derive(Debug, Clone, Default)]
 pub struct FlashArea {
     flash_id: FlashId,
-    pad: [u8; 3],
+    device_id: u8,
+    pad16: u16,
     off: u32,
     size: u32,
 }

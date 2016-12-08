@@ -13,29 +13,31 @@ mod flash;
 pub mod api;
 
 use flash::Flash;
-use area::{BootReq, CBootReq, FlashId};
+use area::{AreaDesc, CAreaDesc, FlashId};
 
 fn main() {
-    let (mut flash, bootreq) = if false {
+    let (mut flash, areadesc) = if false {
         // STM style flash.  Large sectors, with a large scratch area.
         let flash = Flash::new(vec![16 * 1024, 16 * 1024, 16 * 1024, 16 * 1024,
                                64 * 1024,
                                128 * 1024, 128 * 1024, 128 * 1024]);
-        let mut bootreq = BootReq::new(&flash);
-        bootreq.add_image(0x020000, 0x020000, FlashId::Image0);
-        bootreq.add_image(0x040000, 0x020000, FlashId::Image1);
-        bootreq.add_image(0x060000, 0x020000, FlashId::ImageScratch);
-        (flash, bootreq)
+        let mut areadesc = AreaDesc::new(&flash);
+        areadesc.add_image(0x020000, 0x020000, FlashId::Image0);
+        areadesc.add_image(0x040000, 0x020000, FlashId::Image1);
+        areadesc.add_image(0x060000, 0x020000, FlashId::ImageScratch);
+        (flash, areadesc)
     } else {
         // NXP style flash.  Small sectors, one small sector for scratch.
         let flash = Flash::new(vec![4096; 128]);
 
-        let mut bootreq = BootReq::new(&flash);
-        bootreq.add_image(0x020000, 0x020000, FlashId::Image0);
-        bootreq.add_image(0x040000, 0x020000, FlashId::Image1);
-        bootreq.add_image(0x060000, 0x001000, FlashId::ImageScratch);
-        (flash, bootreq)
+        let mut areadesc = AreaDesc::new(&flash);
+        areadesc.add_image(0x020000, 0x020000, FlashId::Image0);
+        areadesc.add_image(0x040000, 0x020000, FlashId::Image1);
+        areadesc.add_image(0x060000, 0x001000, FlashId::ImageScratch);
+        (flash, areadesc)
     };
+
+    // println!("Areas: {:#?}", areadesc.get_c());
 
     // Install the boot trailer signature, so that the code will start an upgrade.
     install_image(&mut flash, 0x020000, 32779);
@@ -45,9 +47,9 @@ fn main() {
 
     // Mark the upgrade as ready to install.  (This looks like it might be a bug in the code,
     // however.)
-    mark_upgrade(&mut flash, 0x03fff8);
+    mark_upgrade(&mut flash, 0x040000 - 402);
 
-    let (fl2, total_count) = try_upgrade(&flash, &bootreq, None);
+    let (fl2, total_count) = try_upgrade(&flash, &areadesc, None);
     println!("First boot, count={}", total_count);
     assert!(verify_image(&fl2, 0x020000, &upgrade));
 
@@ -55,7 +57,7 @@ fn main() {
     // Let's try an image halfway through.
     for i in 1 .. total_count {
         println!("Try interruption at {}", i);
-        let (fl3, total_count) = try_upgrade(&flash, &bootreq, Some(i));
+        let (fl3, total_count) = try_upgrade(&flash, &areadesc, Some(i));
         println!("Second boot, count={}", total_count);
         if !verify_image(&fl3, 0x020000, &upgrade) {
             println!("FAIL");
@@ -71,24 +73,24 @@ fn main() {
 
     println!("First boot for upgrade");
     // unsafe { flash_counter = 570 };
-    boot_go(&mut flash, &bootreq);
+    boot_go(&mut flash, &areadesc);
     // println!("{} flash ops", unsafe { flash_counter });
 
     verify_image(&flash, 0x020000, &upgrade);
 
     println!("\n------------------\nSecond boot");
-    boot_go(&mut flash, &bootreq);
+    boot_go(&mut flash, &areadesc);
     */
 }
 
 /// Test a boot, optionally stopping after 'n' flash options.  Returns a count of the number of
 /// flash operations done total.
-fn try_upgrade(flash: &Flash, bootreq: &BootReq, stop: Option<i32>) -> (Flash, i32) {
+fn try_upgrade(flash: &Flash, areadesc: &AreaDesc, stop: Option<i32>) -> (Flash, i32) {
     // Clone the flash to have a new copy.
     let mut fl = flash.clone();
 
     unsafe { flash_counter = stop.unwrap_or(0) };
-    let (first_interrupted, cnt1) = match boot_go(&mut fl, &bootreq) {
+    let (first_interrupted, cnt1) = match boot_go(&mut fl, &areadesc) {
         -0x13579 => (true, stop.unwrap()),
         0 => (false, unsafe { -flash_counter }),
         x => panic!("Unknown return: {}", x),
@@ -96,7 +98,7 @@ fn try_upgrade(flash: &Flash, bootreq: &BootReq, stop: Option<i32>) -> (Flash, i
     unsafe { flash_counter = 0 };
 
     if first_interrupted {
-        match boot_go(&mut fl, &bootreq) {
+        match boot_go(&mut fl, &areadesc) {
             -0x13579 => panic!("Shouldn't stop again"),
             0 => (),
             x => panic!("Unknown return: {}", x),
@@ -120,9 +122,9 @@ fn show_flash(flash: &Flash) {
 }
 
 /// Invoke the bootloader on this flash device.
-fn boot_go(flash: &mut Flash, bootreq: &BootReq) -> i32 {
+fn boot_go(flash: &mut Flash, areadesc: &AreaDesc) -> i32 {
     unsafe { invoke_boot_go(flash as *mut _ as *mut libc::c_void,
-                            &bootreq.get_c() as *const _) as i32 }
+                            &areadesc.get_c() as *const _) as i32 }
 }
 
 /// Install a "program" into the given image.  This fakes the image header, or at least all of the
@@ -206,7 +208,10 @@ pub struct ImageVersion {
 
 /// Write out the magic so that the loader tries doing an upgrade.
 fn mark_upgrade(flash: &mut Flash, offset: usize) {
-    let magic = vec![0x21u8, 0x43, 0x34, 0x12];
+    let magic = vec![0x77, 0xc2, 0x95, 0xf3,
+                     0x60, 0xd2, 0xef, 0x7f,
+                     0x35, 0x52, 0x50, 0x0f,
+                     0x2c, 0xb6, 0x79, 0x80];
     flash.write(offset, &magic).unwrap();
 }
 
@@ -226,9 +231,9 @@ trait AsRaw : Sized {
 }
 
 extern "C" {
-    // This generates a warning about `CBootReq` not being foreign safe.  There doesn't appear to
+    // This generates a warning about `CAreaDesc` not being foreign safe.  There doesn't appear to
     // be any way to get rid of this warning.  See https://github.com/rust-lang/rust/issues/34798
     // for information and tracking.
-    fn invoke_boot_go(flash: *mut libc::c_void, bootreq: *const CBootReq) -> libc::c_int;
+    fn invoke_boot_go(flash: *mut libc::c_void, areadesc: *const CAreaDesc) -> libc::c_int;
     static mut flash_counter: libc::c_int;
 }
