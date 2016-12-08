@@ -5,6 +5,7 @@
 
 use std::iter::Enumerate;
 use std::slice;
+use pdump::HexDump;
 
 error_chain! {
     errors {
@@ -116,6 +117,10 @@ impl Flash {
 
     pub fn device_size(&self) -> usize {
         self.data.len()
+    }
+
+    pub fn dump(&self) {
+        self.data.dump();
     }
 }
 

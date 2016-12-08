@@ -18,6 +18,8 @@ static void *flash_device;
 static jmp_buf boot_jmpbuf;
 int flash_counter;
 
+int jumped = 0;
+
 struct area {
 	struct flash_area whole;
 	struct flash_area *areas;
@@ -59,20 +61,24 @@ int hal_flash_read(uint8_t flash_id, uint32_t address, void *dst,
 int hal_flash_write(uint8_t flash_id, uint32_t address,
 		    const void *src, int32_t num_bytes)
 {
+	// printf("hal_flash_write: 0x%08x (0x%x)\n", address, num_bytes);
+	// fflush(stdout);
 	if (--flash_counter == 0) {
+		jumped++;
 		longjmp(boot_jmpbuf, 1);
 	}
-	// printf("hal_flash_write: 0x%08x (0x%x)\n", address, num_bytes);
 	return sim_flash_write(flash_device, address, src, num_bytes);
 }
 
 int hal_flash_erase(uint8_t flash_id, uint32_t address,
 		    uint32_t num_bytes)
 {
+	// printf("hal_flash_erase: 0x%08x, (0x%x)\n", address, num_bytes);
+	// fflush(stdout);
 	if (--flash_counter == 0) {
+		jumped++;
 		longjmp(boot_jmpbuf, 1);
 	}
-	// printf("hal_flash_erase: 0x%08x, (0x%x)\n", address, num_bytes);
 	return sim_flash_erase(flash_device, address, num_bytes);
 }
 

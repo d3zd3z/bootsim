@@ -11,6 +11,7 @@ use std::slice;
 mod area;
 mod flash;
 pub mod api;
+mod pdump;
 
 use flash::Flash;
 use area::{AreaDesc, CAreaDesc, FlashId};
@@ -40,14 +41,14 @@ fn main() {
     // println!("Areas: {:#?}", areadesc.get_c());
 
     // Install the boot trailer signature, so that the code will start an upgrade.
-    install_image(&mut flash, 0x020000, 32779);
+    let primary = install_image(&mut flash, 0x020000, 32779);
 
     // Install an upgrade image.
     let upgrade = install_image(&mut flash, 0x040000, 41922);
 
     // Mark the upgrade as ready to install.  (This looks like it might be a bug in the code,
     // however.)
-    mark_upgrade(&mut flash, 0x040000 - 402);
+    mark_upgrade(&mut flash, 0x060000 - 402);
 
     let (fl2, total_count) = try_upgrade(&flash, &areadesc, None);
     println!("First boot, count={}", total_count);
@@ -67,6 +68,14 @@ fn main() {
     println!("{} out of {} failed {:.2}%",
              bad, total_count,
              bad as f32 * 100.0 / total_count as f32);
+
+    println!("Try revert");
+    let fl2 = try_revert(&flash, &areadesc);
+    assert!(verify_image(&fl2, 0x020000, &primary));
+
+    println!("Try norevert");
+    let fl2 = try_norevert(&flash, &areadesc);
+    assert!(verify_image(&fl2, 0x020000, &upgrade));
 
     /*
     // show_flash(&flash);
@@ -98,6 +107,7 @@ fn try_upgrade(flash: &Flash, areadesc: &AreaDesc, stop: Option<i32>) -> (Flash,
     unsafe { flash_counter = 0 };
 
     if first_interrupted {
+        // fl.dump();
         match boot_go(&mut fl, &areadesc) {
             -0x13579 => panic!("Shouldn't stop again"),
             0 => (),
@@ -108,6 +118,26 @@ fn try_upgrade(flash: &Flash, areadesc: &AreaDesc, stop: Option<i32>) -> (Flash,
     let cnt2 = cnt1 - unsafe { flash_counter };
 
     (fl, cnt2)
+}
+
+fn try_revert(flash: &Flash, areadesc: &AreaDesc) -> Flash {
+    let mut fl = flash.clone();
+    unsafe { flash_counter = 0 };
+
+    assert_eq!(boot_go(&mut fl, &areadesc), 0);
+    assert_eq!(boot_go(&mut fl, &areadesc), 0);
+    fl
+}
+
+fn try_norevert(flash: &Flash, areadesc: &AreaDesc) -> Flash {
+    let mut fl = flash.clone();
+    unsafe { flash_counter = 0 };
+
+    assert_eq!(boot_go(&mut fl, &areadesc), 0);
+    // Write boot_ok
+    fl.write(0x040000 - 1, &[1]).unwrap();
+    assert_eq!(boot_go(&mut fl, &areadesc), 0);
+    fl
 }
 
 /// Show the flash layout.
@@ -178,7 +208,17 @@ fn verify_image(flash: &Flash, offset: usize, buf: &[u8]) -> bool {
     let mut copy = vec![0u8; buf.len()];
     flash.read(offset, &mut copy).unwrap();
 
-    buf == &copy[..]
+    if buf != &copy[..] {
+        for i in 0 .. buf.len() {
+            if buf[i] != copy[i] {
+                println!("First failure at {:#x}", offset + i);
+                break;
+            }
+        }
+        false
+    } else {
+        true
+    }
 }
 
 /// The image header
