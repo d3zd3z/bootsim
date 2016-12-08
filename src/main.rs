@@ -64,6 +64,10 @@ fn main() {
             println!("FAIL");
             bad += 1;
         }
+        if !verify_image(&fl3, 0x040000, &primary) {
+            println!("Slot 1 FAIL");
+            bad += 1;
+        }
     }
     println!("{} out of {} failed {:.2}%",
              bad, total_count,
