@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -44,33 +44,26 @@ extern "C" {
 #include <inttypes.h>
 
 struct flash_area {
-    uint8_t fa_flash_id;
-    uint8_t _pad[3];
+    uint8_t fa_id;
+    uint8_t fa_device_id;
+    uint16_t pad16;
     uint32_t fa_off;
     uint32_t fa_size;
 };
 
-/*
- * Flash area types
- */
-#define FLASH_AREA_BOOTLOADER           0
-#define FLASH_AREA_IMAGE_0              1
-#define FLASH_AREA_IMAGE_1              2
-#define FLASH_AREA_IMAGE_SCRATCH        3
-#define FLASH_AREA_NFFS                 4
-#define FLASH_AREA_CORE                 2
-#define FLASH_AREA_REBOOT_LOG           5
+extern const struct flash_area *flash_map;
+extern int flash_map_entries;
 
 /*
  * Initializes flash map. Memory will be referenced by flash_map code
  * from this on.
  */
-void flash_area_init(const struct flash_area *map, int map_entries);
+void flash_map_init(void);
 
 /*
  * Start using flash area.
  */
-int flash_area_open(int idx, const struct flash_area **);
+int flash_area_open(uint8_t id, const struct flash_area **);
 
 void flash_area_close(const struct flash_area *);
 
@@ -79,7 +72,7 @@ void flash_area_close(const struct flash_area *);
  */
 int flash_area_read(const struct flash_area *, uint32_t off, void *dst,
   uint32_t len);
-int flash_area_write(const struct flash_area *, uint32_t off, void *src,
+int flash_area_write(const struct flash_area *, uint32_t off, const void *src,
   uint32_t len);
 int flash_area_erase(const struct flash_area *, uint32_t off, uint32_t len);
 
@@ -93,11 +86,8 @@ uint8_t flash_area_align(const struct flash_area *);
  */
 int flash_area_to_sectors(int idx, int *cnt, struct flash_area *ret);
 
-/*
- * Given flash map index, return sector info in NFFS area desc format.
- */
-struct nffs_area_desc;
-int flash_area_to_nffs_desc(int idx, int *cnt, struct nffs_area_desc *nad);
+int flash_area_id_from_image_slot(int slot);
+int flash_area_id_to_image_slot(int area_id);
 
 #ifdef __cplusplus
 }

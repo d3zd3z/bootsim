@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -22,9 +22,17 @@
 
 #include <stddef.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void *os_malloc(size_t size);
 void os_free(void *mem);
 void *os_realloc(void *ptr, size_t size);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
 

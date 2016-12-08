@@ -4,8 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <bootutil/loader.h>
-#include <hal/flash_map.h>
+#include <bootutil/bootutil.h>
+#include <bootutil/image.h>
+#include "flash_map/flash_map.h"
 
 #include "bootutil_priv.h"
 
@@ -17,14 +18,14 @@ static void *flash_device;
 static jmp_buf boot_jmpbuf;
 int flash_counter;
 
-int invoke_boot_go(void *flash, struct boot_req *req)
+int invoke_boot_go(void *flash)
 {
 	int res;
 	struct boot_rsp rsp;
 
 	flash_device = flash;
 	if (setjmp(boot_jmpbuf) == 0) {
-		res = boot_go(req, &rsp);
+		res = boot_go(&rsp);
 		printf("boot_go result: %d (0x%08x)\n", res, rsp.br_image_addr);
 		return res;
 	} else {
@@ -71,37 +72,65 @@ void *os_malloc(size_t size)
 	return malloc(size);
 }
 
-int bootutil_img_validate(struct image_header *hdr, uint8_t flash_id,
-			  uint32_t addr, uint8_t *tmp_buf,
-			  uint32_t tmp_buf_sz)
+int flash_area_id_from_image_slot(int slot)
 {
-	printf("bootutil_img_validate: 0x%08x\n", addr);
+	printf("%s\n", __FUNCTION__);
 	abort();
 }
 
-int boot_vect_write_test(int slot)
+int flash_area_open(uint8_t id, const struct flash_area **area)
 {
-	printf("boot_vect_write_test\n");
+	printf("%s\n", __FUNCTION__);
 	abort();
 }
 
-#if 0
-int boot_write_status(struct boot_status *bs)
+void flash_area_close(const struct flash_area *area)
 {
-	printf("boot_write_status\n");
+	printf("%s\n", __FUNCTION__);
 	abort();
 }
 
-int boot_read_status(struct boot_status *bs)
+/*
+ * Read/write/erase. Offset is relative from beginning of flash area.
+ */
+int flash_area_read(const struct flash_area *area, uint32_t off, void *dst,
+		    uint32_t len)
 {
-	printf("boot_read_status\n");
-	/* For now, just return no status. */
-	return 0;
-}
-
-void boot_clear_status(void)
-{
-	printf("boot_write_status\n");
+	printf("%s\n", __FUNCTION__);
 	abort();
 }
-#endif
+
+int flash_area_write(const struct flash_area *area, uint32_t off, const void *src,
+		     uint32_t len)
+{
+	printf("%s\n", __FUNCTION__);
+	abort();
+}
+
+int flash_area_erase(const struct flash_area *area, uint32_t off, uint32_t len)
+{
+	printf("%s\n", __FUNCTION__);
+	abort();
+}
+
+int flash_area_to_sectors(int idx, int *cnt, struct flash_area *ret)
+{
+	printf("%s\n", __FUNCTION__);
+	abort();
+}
+
+uint8_t flash_area_align(const struct flash_area *area)
+{
+	printf("%s\n", __FUNCTION__);
+	abort();
+}
+
+
+int bootutil_img_validate(struct image_header *hdr,
+                          const struct flash_area *fap,
+                          uint8_t *tmp_buf, uint32_t tmp_buf_sz,
+                          uint8_t *seed, int seed_len, uint8_t *out_hash)
+{
+	printf("%s\n", __FUNCTION__);
+	abort();
+}

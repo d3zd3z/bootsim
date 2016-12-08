@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,302 +17,440 @@
  * under the License.
  */
 
+#include <assert.h>
 #include <string.h>
 #include <inttypes.h>
-#include <assert.h>
-#include <hal/hal_flash.h>
-#include <hal/flash_map.h>
-// #include <hal/hal_bsp.h>
-// #include <os/os.h>
+
+#include "syscfg/syscfg.h"
+#include "sysflash/sysflash.h"
+#include "hal/hal_bsp.h"
+#include "hal/hal_flash.h"
+#include "flash_map/flash_map.h"
+// #include "os/os.h"
 #include "bootutil/image.h"
-#include "bootutil/bootutil_misc.h"
+#include "bootutil/bootutil.h"
 #include "bootutil_priv.h"
 
-#if 0
-/*
- * Read the image trailer from a given slot.
- */
-static int
-boot_vect_read_img_trailer(int slot, struct boot_img_trailer *bit)
-{
-    int rc;
-    const struct flash_area *fap;
-    uint32_t off;
+int boot_current_slot;
 
-    rc = flash_area_open(slot, &fap);
-    if (rc) {
-        return rc;
-    }
-    off = fap->fa_size - sizeof(struct boot_img_trailer);
-    rc = flash_area_read(fap, off, bit, sizeof(*bit));
-    flash_area_close(fap);
+const uint32_t boot_img_magic[4] = {
+    0xf395c277,
+    0x7fefd260,
+    0x0f505235,
+    0x8079b62c,
+};
 
-    return rc;
-}
+struct boot_swap_table {
+    /** * For each field, a value of 0 means "any". */
+    uint8_t bsw_magic_slot0;
+    uint8_t bsw_magic_slot1;
+    uint8_t bsw_image_ok_slot0;
+
+    uint8_t bsw_swap_type;
+};
 
 /**
- * Retrieves from the slot number of the test image (i.e.,
- * the image that has not been proven stable, and which will only run once).
- *
- * @param slot              On success, the slot number of image to boot.
- *
- * @return                  0 on success; nonzero on failure.
+ * This set of tables maps image trailer contents to swap operation type.
+ * When searching for a match, these tables must be iterated sequentially.
  */
-int
-boot_vect_read_test(int *slot)
-{
-    struct boot_img_trailer bit;
-    int i;
-    int rc;
-
-    for (i = FLASH_AREA_IMAGE_0; i <= FLASH_AREA_IMAGE_1; i++) {
-        if (i == bsp_imgr_current_slot()) {
-            continue;
-        }
-        rc = boot_vect_read_img_trailer(i, &bit);
-        if (rc) {
-            continue;
-        }
-        if (bit.bit_copy_start == BOOT_IMG_MAGIC) {
-            *slot = i;
-            return 0;
-        }
-    }
-    return -1;
-}
-
-/**
- * Retrieves from the slot number of the main image. If this is
- * different from test image slot, next restart will revert to main.
- *
- * @param out_ver           On success, the main version gets written here.
- *
- * @return                  0 on success; nonzero on failure.
- */
-int
-boot_vect_read_main(int *slot)
-{
-    int rc;
-    struct boot_img_trailer bit;
-
-    rc = boot_vect_read_img_trailer(FLASH_AREA_IMAGE_0, &bit);
-    assert(rc == 0);
-
-    if (bit.bit_copy_start != BOOT_IMG_MAGIC || bit.bit_img_ok != 0xff) {
-        /*
-         * If there never was copy that took place, or if the current
-         * image has been marked good, we'll keep booting it.
+static const struct boot_swap_table boot_swap_tables[] = {
+    {
+        /*          | slot-0     | slot-1     |
+         *----------+------------+------------|
+         *    magic | Unset      | Unset      |
+         * image-ok | Any        | N/A        |
+         * ---------+------------+------------'
+         * swap: none                         |
+         * -----------------------------------'
          */
-        *slot = FLASH_AREA_IMAGE_0;
-    } else {
-        *slot = FLASH_AREA_IMAGE_1;
+        .bsw_magic_slot0 =      BOOT_MAGIC_UNSET,
+        .bsw_magic_slot1 =      BOOT_MAGIC_UNSET,
+        .bsw_image_ok_slot0 =   0,
+        .bsw_swap_type =        BOOT_SWAP_TYPE_NONE,
+    },
+
+    {
+        /*          | slot-0     | slot-1     |
+         *----------+------------+------------|
+         *    magic | Any        | Good       |
+         * image-ok | Any        | N/A        |
+         * ---------+------------+------------'
+         * swap: test                         |
+         * -----------------------------------'
+         */
+        .bsw_magic_slot0 =      0,
+        .bsw_magic_slot1 =      BOOT_MAGIC_GOOD,
+        .bsw_image_ok_slot0 =   0,
+        .bsw_swap_type =        BOOT_SWAP_TYPE_TEST,
+    },
+
+    {
+        /*          | slot-0     | slot-1     |
+         *----------+------------+------------|
+         *    magic | Good       | Unset      |
+         * image-ok | 0xff       | N/A        |
+         * ---------+------------+------------'
+         * swap: revert (test image running)  |
+         * -----------------------------------'
+         */
+        .bsw_magic_slot0 =      BOOT_MAGIC_GOOD,
+        .bsw_magic_slot1 =      BOOT_MAGIC_UNSET,
+        .bsw_image_ok_slot0 =   0xff,
+        .bsw_swap_type =        BOOT_SWAP_TYPE_REVERT,
+    },
+
+    {
+        /*          | slot-0     | slot-1     |
+         *----------+------------+------------|
+         *    magic | Good       | Unset      |
+         * image-ok | 0x01       | N/A        |
+         * ---------+------------+------------'
+         * swap: none (confirmed test image)  |
+         * -----------------------------------'
+         */
+        .bsw_magic_slot0 =      BOOT_MAGIC_GOOD,
+        .bsw_magic_slot1 =      BOOT_MAGIC_UNSET,
+        .bsw_image_ok_slot0 =   0x01,
+        .bsw_swap_type =        BOOT_SWAP_TYPE_NONE,
+    },
+};
+
+#define BOOT_SWAP_TABLES_COUNT \
+    (sizeof boot_swap_tables / sizeof boot_swap_tables[0])
+
+int
+boot_magic_code(const uint32_t *magic)
+{
+    int i;
+
+    if (memcmp(magic, boot_img_magic, sizeof boot_img_magic) == 0) {
+        return BOOT_MAGIC_GOOD;
     }
+
+    for (i = 0; i < 4; i++) {
+        if (magic[i] == 0xffffffff) {
+            return BOOT_MAGIC_UNSET;
+        }
+    }
+
+    return BOOT_MAGIC_BAD;
+}
+
+uint32_t
+boot_status_sz(uint8_t min_write_sz)
+{
+    return BOOT_STATUS_MAX_ENTRIES * BOOT_STATUS_STATE_COUNT * min_write_sz;
+}
+
+uint32_t
+boot_trailer_sz(uint8_t min_write_sz)
+{
+    return sizeof boot_img_magic            +
+           boot_status_sz(min_write_sz)     +
+           min_write_sz * 2;
+}
+
+static uint32_t
+boot_magic_off(const struct flash_area *fap)
+{
+    uint32_t off_from_end;
+    uint8_t elem_sz;
+
+    elem_sz = flash_area_align(fap);
+
+    off_from_end = boot_trailer_sz(elem_sz);
+
+    assert(off_from_end <= fap->fa_size);
+    return fap->fa_size - off_from_end;
+}
+
+uint32_t
+boot_status_off(const struct flash_area *fap)
+{
+    return boot_magic_off(fap) + sizeof boot_img_magic;
+}
+
+static uint32_t
+boot_copy_done_off(const struct flash_area *fap)
+{
+    return fap->fa_size - flash_area_align(fap) * 2;
+}
+
+static uint32_t
+boot_image_ok_off(const struct flash_area *fap)
+{
+    return fap->fa_size - flash_area_align(fap);
+}
+
+int
+boot_read_swap_state(const struct flash_area *fap,
+                     struct boot_swap_state *state)
+{
+    uint32_t magic[4];
+    uint32_t off;
+    int rc;
+
+    off = boot_magic_off(fap);
+    rc = flash_area_read(fap, off, magic, sizeof magic);
+    if (rc != 0) {
+        return BOOT_EFLASH;
+    }
+    state->magic = boot_magic_code(magic);
+
+    off = boot_copy_done_off(fap);
+    rc = flash_area_read(fap, off, &state->copy_done, 1);
+    if (rc != 0) {
+        return BOOT_EFLASH;
+    }
+
+    off = boot_image_ok_off(fap);
+    rc = flash_area_read(fap, off, &state->image_ok, 1);
+    if (rc != 0) {
+        return BOOT_EFLASH;
+    }
+
     return 0;
 }
 
 /**
- * Write the test image version number from the boot vector.
- *
- * @return                  0 on success; nonzero on failure.
+ * Reads the image trailer from the scratch area.
  */
 int
-boot_vect_write_test(int slot)
+boot_read_swap_state_scratch(struct boot_swap_state *state)
 {
     const struct flash_area *fap;
-    uint32_t off;
-    uint32_t magic;
     int rc;
 
-    rc = flash_area_open(slot, &fap);
+    rc = flash_area_open(FLASH_AREA_IMAGE_SCRATCH, &fap);
     if (rc) {
-        return rc;
+        rc = BOOT_EFLASH;
+        goto done;
     }
 
-    off = fap->fa_size - sizeof(struct boot_img_trailer);
-    magic = BOOT_IMG_MAGIC;
+    rc = boot_read_swap_state(fap, state);
+    if (rc != 0) {
+        goto done;
+    }
 
-    rc = flash_area_write(fap, off, &magic, sizeof(magic));
+    rc = 0;
+
+done:
     flash_area_close(fap);
-
     return rc;
 }
 
 /**
- * Deletes the main image version number from the boot vector.
- * This must be called by the app to confirm that it is ok to keep booting
- * to this image.
- *
- * @return                  0 on success; nonzero on failure.
+ * Reads the image trailer from a given image slot.
  */
 int
-boot_vect_write_main(void)
+boot_read_swap_state_img(int slot, struct boot_swap_state *state)
 {
     const struct flash_area *fap;
-    uint32_t off;
-    int rc;
-    uint8_t val;
-
-    /*
-     * Write to slot 0.
-     */
-    rc = flash_area_open(FLASH_AREA_IMAGE_0, &fap);
-    if (rc) {
-        return rc;
-    }
-
-    off = fap->fa_size - sizeof(struct boot_img_trailer);
-    off += (sizeof(uint32_t) + sizeof(uint8_t));
-    rc = flash_area_read(fap, off, &val, sizeof(val));
-    if (!rc && val == 0xff) {
-        val = 0;
-        rc = flash_area_write(fap, off, &val, sizeof(val));
-    }
-    return rc;
-}
-#endif
-
-/**
- * Reads the header of image present in flash.  Header corresponding to
- * empty image slot is filled with 0xff bytes.
- *
- * @param out_headers           Points to an array of image headers.  Each
- *                                  element is filled with the header of the
- *                                  corresponding image in flash.
- * @param addresses             An array containing the flash addresses of each
- *                                  image slot.
- * @param num_addresses         The number of headers to read.  This should
- *                                  also be equal to the lengths of the
- *                                  out_headers and addresses arrays.
- */
-int
-boot_read_image_header(struct boot_image_location *loc,
-                       struct image_header *out_hdr)
-{
+    int area_id;
     int rc;
 
-    rc = hal_flash_read(loc->bil_flash_id, loc->bil_address, out_hdr,
-                        sizeof *out_hdr);
+    area_id = flash_area_id_from_image_slot(slot);
+    rc = flash_area_open(area_id, &fap);
     if (rc != 0) {
         rc = BOOT_EFLASH;
-    } else if (out_hdr->ih_magic != IMAGE_MAGIC) {
-        rc = BOOT_EBADIMAGE;
+        goto done;
     }
 
-    if (rc) {
-        memset(out_hdr, 0xff, sizeof(*out_hdr));
+    rc = boot_read_swap_state(fap, state);
+    if (rc != 0) {
+        goto done;
     }
+
+    rc = 0;
+
+done:
+    flash_area_close(fap);
     return rc;
 }
 
-/*
- * How far has the copy progressed?
- */
-static void
-boot_read_status_bytes(struct boot_status *bs, uint8_t flash_id, uint32_t off)
-{
-    uint8_t status;
-
-    assert(bs->elem_sz);
-    off -= bs->elem_sz * 2;
-    while (1) {
-        hal_flash_read(flash_id, off, &status, sizeof(status));
-        if (status == 0xff) {
-            break;
-        }
-        off -= bs->elem_sz;
-        if (bs->state == 2) {
-            bs->idx++;
-            bs->state = 0;
-        } else {
-            bs->state++;
-        }
-    }
-}
-
-/**
- * Reads the boot status from the flash.  The boot status contains
- * the current state of an interrupted image copy operation.  If the boot
- * status is not present, or it indicates that previous copy finished,
- * there is no operation in progress.
- */
 int
-boot_read_status(struct boot_status *bs)
+boot_write_magic(const struct flash_area *fap)
 {
-    struct boot_img_trailer bit;
-    uint8_t flash_id;
     uint32_t off;
+    int rc;
 
-    /*
-     * Check if boot_img_trailer is in scratch, or at the end of slot0.
-     */
-    boot_slot_magic(0, &bit);
-    if (bit.bit_copy_start == BOOT_IMG_MAGIC && bit.bit_copy_done == 0xff) {
-        boot_magic_loc(0, &flash_id, &off);
-        boot_read_status_bytes(bs, flash_id, off);
-        return 1;
+    off = boot_magic_off(fap);
+
+    rc = flash_area_write(fap, off, boot_img_magic, sizeof boot_img_magic);
+    if (rc != 0) {
+        return BOOT_EFLASH;
     }
-    boot_scratch_magic(&bit);
-    if (bit.bit_copy_start == BOOT_IMG_MAGIC && bit.bit_copy_done == 0xff) {
-        boot_scratch_loc(&flash_id, &off);
-        boot_read_status_bytes(bs, flash_id, off);
-        return 1;
-    }
+
     return 0;
 }
 
-
-/**
- * Writes the supplied boot status to the flash file system.  The boot status
- * contains the current state of an in-progress image copy operation.
- *
- * @param bs                    The boot status to write.
- *
- * @return                      0 on success; nonzero on failure.
- */
 int
-boot_write_status(struct boot_status *bs)
+boot_write_copy_done(const struct flash_area *fap)
 {
     uint32_t off;
-    uint8_t flash_id;
     uint8_t val;
+    int rc;
 
-    if (bs->idx == 0) {
-        /*
-         * Write to scratch
-         */
-        boot_scratch_loc(&flash_id, &off);
-    } else {
-        /*
-         * Write to slot 0;
-         */
-        boot_magic_loc(0, &flash_id, &off);
+    off = boot_copy_done_off(fap);
+
+    val = 1;
+    rc = flash_area_write(fap, off, &val, 1);
+    if (rc != 0) {
+        return BOOT_EFLASH;
     }
-    off -= ((3 * bs->elem_sz) * bs->idx + bs->elem_sz * (bs->state + 1));
-
-    val = bs->state;
-    hal_flash_write(flash_id, off, &val, sizeof(val));
 
     return 0;
 }
 
-/**
- * Finalizes the copy-in-progress status on the flash.  The boot status
- * contains the current state of an in-progress image copy operation.  By
- * clearing this, it is implied that there is no copy operation in
- * progress.
- */
-void
-boot_clear_status(void)
+int
+boot_write_image_ok(const struct flash_area *fap)
 {
     uint32_t off;
-    uint8_t val = 0;
-    uint8_t flash_id;
+    uint8_t val;
+    int rc;
 
-    /*
-     * Write to slot 0; boot_img_trailer is the 8 bytes within image slot.
-     * Here we say that copy operation was finished.
-     */
-    boot_magic_loc(0, &flash_id, &off);
-    off += sizeof(uint32_t);
-    hal_flash_write(flash_id, off, &val, sizeof(val));
+    off = boot_image_ok_off(fap);
+
+    val = 1;
+    rc = flash_area_write(fap, off, &val, 1);
+    if (rc != 0) {
+        return BOOT_EFLASH;
+    }
+
+    return 0;
+}
+
+int
+boot_swap_type(void)
+{
+    const struct boot_swap_table *table;
+    struct boot_swap_state state_slot0;
+    struct boot_swap_state state_slot1;
+    int rc;
+    int i;
+
+    rc = boot_read_swap_state_img(0, &state_slot0);
+    assert(rc == 0);
+
+    rc = boot_read_swap_state_img(1, &state_slot1);
+    assert(rc == 0);
+
+    for (i = 0; i < BOOT_SWAP_TABLES_COUNT; i++) {
+        table = boot_swap_tables + i;
+
+        if ((table->bsw_magic_slot0     == 0    ||
+             table->bsw_magic_slot0     == state_slot0.magic)           &&
+            (table->bsw_magic_slot1     == 0    ||
+             table->bsw_magic_slot1     == state_slot1.magic)           &&
+            (table->bsw_image_ok_slot0  == 0    ||
+             table->bsw_image_ok_slot0  == state_slot0.image_ok)) {
+
+            return table->bsw_swap_type;
+        }
+    }
+
+    assert(0);
+    return BOOT_SWAP_TYPE_NONE;
+}
+
+/**
+ * Marks the image in slot 1 as pending.  On the next reboot, the system will
+ * perform a one-time boot of the slot 1 image.
+ *
+ * @return                  0 on success; nonzero on failure.
+ */
+int
+boot_set_pending(void)
+{
+    const struct flash_area *fap;
+    struct boot_swap_state state_slot1;
+    int area_id;
+    int rc;
+
+    rc = boot_read_swap_state_img(1, &state_slot1);
+    if (rc != 0) {
+        return rc;
+    }
+
+    switch (state_slot1.magic) {
+    case BOOT_MAGIC_GOOD:
+        /* Swap already scheduled. */
+        return 0;
+
+    case BOOT_MAGIC_UNSET:
+        area_id = flash_area_id_from_image_slot(1);
+        rc = flash_area_open(area_id, &fap);
+        if (rc != 0) {
+            rc = BOOT_EFLASH;
+        } else {
+            rc = boot_write_magic(fap);
+        }
+
+        flash_area_close(fap);
+        return rc;
+
+    default:
+        /* XXX: Temporary assert. */
+        assert(0);
+        return -1;
+    }
+}
+
+/**
+ * Marks the image in slot 0 as confirmed.  The system will continue booting into the image in slot 0 until told to boot from a different slot.
+ *
+ * @return                  0 on success; nonzero on failure.
+ */
+int
+boot_set_confirmed(void)
+{
+    const struct flash_area *fap;
+    struct boot_swap_state state_slot0;
+    int rc;
+
+    rc = boot_read_swap_state_img(0, &state_slot0);
+    if (rc != 0) {
+        return rc;
+    }
+
+    switch (state_slot0.magic) {
+    case BOOT_MAGIC_GOOD:
+        /* Confirm needed; proceed. */
+        break;
+
+    case BOOT_MAGIC_UNSET:
+        /* Already confirmed. */
+        return 0;
+
+    case BOOT_MAGIC_BAD:
+        /* Unexpected state. */
+        return BOOT_EBADVECT;
+    }
+
+    if (state_slot0.copy_done == 0xff) {
+        /* Swap never completed.  This is unexpected. */
+        return BOOT_EBADVECT;
+    }
+
+    if (state_slot0.image_ok != 0xff) {
+        /* Already confirmed. */
+        return 0;
+    }
+
+    rc = flash_area_open(FLASH_AREA_IMAGE_0, &fap);
+    if (rc) {
+        rc = BOOT_EFLASH;
+        goto done;
+    }
+
+    rc = boot_write_image_ok(fap);
+    if (rc != 0) {
+        goto done;
+    }
+
+    rc = 0;
+
+done:
+    flash_area_close(fap);
+    return rc;
 }

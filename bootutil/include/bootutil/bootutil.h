@@ -1,4 +1,4 @@
-/**
+/*
  * Licensed to the Apache Software Foundation (ASF) under one
  * or more contributor license agreements.  See the NOTICE file
  * distributed with this work for additional information
@@ -17,40 +17,21 @@
  * under the License.
  */
 
-#ifndef H_LOADER_
-#define H_LOADER_
+#ifndef H_BOOTUTIL_
+#define H_BOOTUTIL_
 
 #include <inttypes.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define BOOT_SWAP_TYPE_NONE     1
+#define BOOT_SWAP_TYPE_TEST     2
+#define BOOT_SWAP_TYPE_REVERT   3
+#define BOOT_SWAP_TYPE_FAIL     4
+
 struct image_header;
-
-/** A request object instructing the boot loader how to proceed. */
-struct boot_req {
-    /**
-     * Array of area descriptors indicating the layout of flash(es); must
-     * be terminated with a 0-length element.
-     */
-    struct flash_area *br_area_descs;
-
-    /**
-     * Array of indices of elements in the br_area_descs array; indicates which
-     * areas represent the beginning of an image slot.  These are indices
-     * to br_area_descs array.
-     */
-    uint8_t *br_slot_areas;
-
-    /**
-     * The number of image areas (i.e., the size of the br_image_areas array).
-     */
-    uint8_t br_num_image_areas;
-
-    /** The area to use as the image scratch area, index is
-	index to br_area_descs array, of the  */
-    uint8_t br_scratch_area_idx;
-
-    /** Size of the image slot */
-    uint32_t br_img_sz;
-};
-
 /**
  * A response object provided by the boot loader code; indicates where to jump
  * to execute the main image.
@@ -67,6 +48,22 @@ struct boot_rsp {
     uint32_t br_image_addr;
 };
 
-int boot_go(const struct boot_req *req, struct boot_rsp *rsp);
+/* you must have pre-allocated all the entries within this structure */
+int boot_go(struct boot_rsp *rsp);
+
+int boot_swap_type(void);
+
+int boot_set_pending(void);
+int boot_set_confirmed(void);
+
+#define SPLIT_GO_OK                 (0)
+#define SPLIT_GO_NON_MATCHING       (-1)
+#define SPLIT_GO_ERR                (-2)
+int
+split_go(int loader_slot, int split_slot, void **entry);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
